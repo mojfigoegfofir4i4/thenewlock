@@ -1,0 +1,338 @@
+local player = game.Players.LocalPlayer
+local camera = workspace.CurrentCamera
+local playerGui = player:WaitForChild("PlayerGui")
+
+local smoothSpeed = 0.9
+local predictionValue = 0.150
+local isLockedOn = false
+local lockedPlayer = nil
+local resolverActive = true
+local currentIndicator = nil
+
+-- Utility function to calculate distance
+local function calculateDistance(a, b)
+    return (a - b).Magnitude
+end
+
+-- Anti-Aim Resolver
+local function resolveAntiAim(targetPlayer)
+    if targetPlayer and targetPlayer.Character then
+        local humanoidRootPart = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+        if humanoidRootPart then
+            return humanoidRootPart.Position
+        end
+    end
+    return nil
+end
+
+-- Enhanced Prediction Function with Jump Prediction
+local function enhancedPrediction(targetPlayer)
+    if targetPlayer and targetPlayer.Character then
+        local humanoidRootPart = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+        local humanoid = targetPlayer.Character:FindFirstChild("Humanoid")
+        if humanoidRootPart and humanoid then
+            local velocity = humanoidRootPart.Velocity
+            local predictedPosition = humanoidRootPart.Position + velocity * predictionValue
+
+            -- Check if the player is in the air (typically, this means the player has jumped)
+            if humanoid:GetState() == Enum.HumanoidStateType.Physics then
+                -- Adjust prediction for jump (consider vertical velocity)
+                local verticalVelocity = velocity.Y
+                local gravity = game:GetService("Workspace").Gravity  -- Get current gravity
+
+                -- Predict the vertical position of the player using basic physics
+                local jumpTime = math.abs(verticalVelocity / gravity)  -- Time to reach the peak of the jump
+                local jumpHeight = verticalVelocity * jumpTime - (0.5 * gravity * jumpTime ^ 2)
+
+                -- Predict position with respect to gravity and jump time
+                predictedPosition = humanoidRootPart.Position + velocity * predictionValue
+                predictedPosition = predictedPosition + Vector3.new(0, jumpHeight, 0)
+
+                -- Optionally, add anti-aim resolver logic here if needed
+                if resolverActive then
+                    local resolvedPosition = resolveAntiAim(targetPlayer)
+                    if resolvedPosition then
+                        predictedPosition = resolvedPosition
+                    end
+                end
+            end
+            return predictedPosition
+        end
+    end
+    return nil
+end-- Enhanced Prediction Function with Jump Prediction
+-- Enhanced Prediction Function with Jump and Fall Prediction
+local function enhancedPrediction(targetPlayer)
+    if targetPlayer and targetPlayer.Character then
+        local humanoidRootPart = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+        local humanoid = targetPlayer.Character:FindFirstChildOfClass("Humanoid")
+        
+        if humanoidRootPart and humanoid then
+            local velocity = humanoidRootPart.Velocity
+            local predictedPosition = humanoidRootPart.Position + velocity * predictionValue  -- Predict position based on velocity
+
+            -- Handle horizontal movement prediction (left-right movement while jumping or falling)
+            local horizontalVelocity = Vector3.new(velocity.X, 0, velocity.Z)  -- Only horizontal velocity
+            local horizontalPrediction = humanoidRootPart.Position + horizontalVelocity * predictionValue
+            
+            -- Adjust for gravity (vertical movement prediction)
+            local gravity = workspace.Gravity
+            local timeToFall = (-velocity.Y - math.sqrt(velocity.Y^2 - 2 * gravity * humanoidRootPart.Position.Y)) / gravity
+            local predictedFallPosition = humanoidRootPart.Position + Vector3.new(0, velocity.Y * timeToFall + 0.5 * gravity * timeToFall^2, 0)
+
+            -- If the player is falling or about to land, aim lower
+            if velocity.Y < 0 then
+                predictedPosition = predictedFallPosition
+            else
+                predictedPosition = horizontalPrediction  -- For air movement, use horizontal prediction
+            end
+
+            -- If resolverActive, apply anti-aim resolver
+            if resolverActive then
+                local resolvedPosition = resolveAntiAim(targetPlayer)
+                if resolvedPosition then
+                    predictedPosition = resolvedPosition
+                end
+            end
+
+            -- Only adjust the prediction if the player is in the air, not on the ground
+            if humanoid:GetState() == Enum.HumanoidStateType.Physics then
+                return predictedPosition  -- In air, adjust fall trajectory
+            else
+                -- If on the ground, use the standard prediction (no gravity adjustments)
+                return horizontalPrediction  -- On the ground, just use horizontal movement
+            end
+        end
+    end
+    return nil
+end
+
+-- Create Target Indicator
+local function createTargetIndicator(targetPlayer)
+    local highlight = Instance.new("Highlight")
+    highlight.Adornee = targetPlayer.Character
+    highlight.FillColor = Color3.new(1, 0, 0)
+    highlight.FillTransparency = 0.5
+    highlight.OutlineTransparency = 1
+    highlight.Parent = targetPlayer.Character
+    return highlight
+end
+
+-- Function to Lock-On
+local function lockOn()
+    local closestPlayer = nil
+    local shortestDistance = math.huge
+    local screenCenter = Vector2.new(camera.ViewportSize.X / 2, camera.ViewportSize.Y / 2)
+
+    for _, p in pairs(game.Players:GetPlayers()) do
+        if p ~= player then
+            local character = p.Character
+            if character and character:FindFirstChild("HumanoidRootPart") then
+                local head = character.HumanoidRootPart
+                local headPos = camera:WorldToScreenPoint(head.Position)
+
+                local distance = (screenCenter - Vector2.new(headPos.X, headPos.Y)).Magnitude
+                if distance < shortestDistance then
+                    shortestDistance = distance
+                    closestPlayer = p
+                end
+            end
+        end
+    end
+
+    if closestPlayer then
+        lockedPlayer = closestPlayer
+        isLockedOn = true
+        if currentIndicator then
+            currentIndicator:Destroy()
+        end
+        currentIndicator = createTargetIndicator(lockedPlayer)
+    else
+        print("No player found to lock onto.")
+    end
+end
+
+-- Function to Smoothly Drag Camera
+local function smoothlyDragToPlayer(targetPlayer)
+    if targetPlayer then
+        local predictedPosition = enhancedPrediction(targetPlayer)
+        if predictedPosition then
+            local currentPosition = camera.CFrame.Position
+            camera.CFrame = CFrame.new(currentPosition:Lerp(predictedPosition, smoothSpeed), predictedPosition)
+        end
+    end
+end
+
+-- Function to Stop Locking On
+local function stopLockingOn()
+    if currentIndicator then
+        currentIndicator:Destroy()
+        currentIndicator = nil
+    end
+    lockedPlayer = nil
+    isLockedOn = false
+end
+
+-- Create GUI with fancy buttons and new resolver option
+local function createGUI()
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Parent = playerGui
+
+    local function makeRainbow(button)
+        local colorIndex = 0
+        task.spawn(function()
+            while true do
+                colorIndex = (colorIndex + 1) % 360
+                button.BackgroundColor3 = Color3.fromHSV(colorIndex / 360, 1, 1)
+                button.BorderSizePixel = 2
+                button.BorderColor3 = Color3.new(1, 1, 1)
+                task.wait(0.05)
+            end
+        end)
+    end
+
+    local lockButton = Instance.new("TextButton")
+    lockButton.Size = UDim2.new(0, 100, 0, 50)
+    lockButton.Position = UDim2.new(1, -110, 0, 10)
+    lockButton.Text = "Lock On"
+    lockButton.Font = Enum.Font.GothamBold
+    lockButton.TextColor3 = Color3.new(1, 1, 1)
+    lockButton.Parent = screenGui
+    makeRainbow(lockButton)
+
+    local settingsButton = Instance.new("TextButton")
+    settingsButton.Size = UDim2.new(0, 100, 0, 50)
+    settingsButton.Position = UDim2.new(1, -220, 0, 10)
+    settingsButton.Text = "Settings"
+    settingsButton.Font = Enum.Font.GothamBold
+    settingsButton.TextColor3 = Color3.new(1, 1, 1)
+    settingsButton.Parent = screenGui
+    makeRainbow(settingsButton)
+
+    local settingsFrame = Instance.new("Frame")
+    settingsFrame.Size = UDim2.new(0, 250, 0, 200)
+    settingsFrame.Position = UDim2.new(0.5, -125, 0.5, -100)
+    settingsFrame.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
+    settingsFrame.Visible = false
+    settingsFrame.Parent = screenGui
+
+    local settingsUICorner = Instance.new("UICorner")
+    settingsUICorner.CornerRadius = UDim.new(0, 10)
+    settingsUICorner.Parent = settingsFrame
+
+    local smoothnessLabel = Instance.new("TextLabel")
+    smoothnessLabel.Size = UDim2.new(0, 120, 0, 30)
+    smoothnessLabel.Position = UDim2.new(0, 10, 0, 10)
+    smoothnessLabel.Text = "Smoothness:"
+    smoothnessLabel.Font = Enum.Font.Gotham
+    smoothnessLabel.TextColor3 = Color3.new(1, 1, 1)
+    smoothnessLabel.BackgroundTransparency = 1
+    smoothnessLabel.Parent = settingsFrame
+
+    local smoothnessBox = Instance.new("TextBox")
+    smoothnessBox.Size = UDim2.new(0, 100, 0, 30)
+    smoothnessBox.Position = UDim2.new(0, 140, 0, 10)
+    smoothnessBox.Text = tostring(smoothSpeed)
+    smoothnessBox.Font = Enum.Font.Gotham
+    smoothnessBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    smoothnessBox.TextColor3 = Color3.new(1, 1, 1)
+    smoothnessBox.Parent = settingsFrame
+
+    local predictionLabel = Instance.new("TextLabel")
+    predictionLabel.Size = UDim2.new(0, 120, 0, 30)
+    predictionLabel.Position = UDim2.new(0, 10, 0, 50)
+    predictionLabel.Text = "Prediction:"
+    predictionLabel.Font = Enum.Font.Gotham
+    predictionLabel.TextColor3 = Color3.new(1, 1, 1)
+    predictionLabel.BackgroundTransparency = 1
+    predictionLabel.Parent = settingsFrame
+
+    local predictionBox = Instance.new("TextBox")
+    predictionBox.Size = UDim2.new(0, 100, 0, 30)
+    predictionBox.Position = UDim2.new(0, 140, 0, 50)
+    predictionBox.Text = tostring(predictionValue)
+    predictionBox.Font = Enum.Font.Gotham
+    predictionBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    predictionBox.TextColor3 = Color3.new(1, 1, 1)
+    predictionBox.Parent = settingsFrame
+
+    local resolverLabel = Instance.new("TextLabel")
+    resolverLabel.Size = UDim2.new(0, 120, 0, 30)
+    resolverLabel.Position = UDim2.new(0, 10, 0, 90)
+    resolverLabel.Text = "Resolver:"
+    resolverLabel.Font = Enum.Font.Gotham
+    resolverLabel.TextColor3 = Color3.new(1, 1, 1)
+    resolverLabel.BackgroundTransparency = 1
+    resolverLabel.Parent = settingsFrame
+
+    local resolverToggle = Instance.new("TextButton")
+    resolverToggle.Size = UDim2.new(0, 100, 0, 30)
+    resolverToggle.Position = UDim2.new(0, 140, 0, 90)
+    resolverToggle.Text = "ON"
+    resolverToggle.Font = Enum.Font.Gotham
+    resolverToggle.BackgroundColor3 = Color3.fromRGB(50, 200, 50)
+    resolverToggle.TextColor3 = Color3.new(1, 1, 1)
+    resolverToggle.Parent = settingsFrame
+
+    resolverToggle.MouseButton1Click:Connect(function()
+        resolverActive = not resolverActive
+        resolverToggle.Text = resolverActive and "ON" or "OFF"
+        resolverToggle.BackgroundColor3 = resolverActive and Color3.fromRGB(50, 200, 50) or Color3.fromRGB(200, 50, 50)
+    end)
+
+    lockButton.MouseButton1Click:Connect(function()
+        if isLockedOn then
+            stopLockingOn()
+            lockButton.Text = "Lock On"
+        else
+            lockOn()
+            lockButton.Text = "Lock On (Active)"
+        end
+    end)
+
+    settingsButton.MouseButton1Click:Connect(function()
+        settingsFrame.Visible = not settingsFrame.Visible
+    end)
+
+    smoothnessBox.FocusLost:Connect(function()
+        local newSmoothness = tonumber(smoothnessBox.Text)
+        if newSmoothness then
+            smoothSpeed = math.clamp(newSmoothness, 0.01, 10)
+        end
+    end)
+
+    predictionBox.FocusLost:Connect(function()
+        local newPrediction = tonumber(predictionBox.Text)
+        if newPrediction then
+            predictionValue = newPrediction
+        end
+    end)
+end
+
+-- Initialize
+createGUI()
+
+game:GetService("RunService").Heartbeat:Connect(function()
+    if isLockedOn and lockedPlayer then
+        -- Continuously update the camera and prediction to follow the target player
+        smoothlyDragToPlayer(lockedPlayer)
+
+        -- Ensure the character rotation (Look-At behavior) is applied
+        if lookAtEnabled then
+            local targetPosition = lockedPlayer.Character:FindFirstChild("HumanoidRootPart").Position
+            -- Rotate the character to face the target
+            local direction = (targetPosition - player.Character.HumanoidRootPart.Position).unit
+            local lookAtCFrame = CFrame.lookAt(player.Character.HumanoidRootPart.Position, targetPosition)
+
+            -- Apply the rotation to the player's character (HumanoidRootPart)
+            player.Character.HumanoidRootPart.CFrame = CFrame.new(player.Character.HumanoidRootPart.Position, targetPosition)
+
+            -- Optional: Rotate the camera to face the target (if desired)
+            camera.CFrame = camera.CFrame:Lerp(CFrame.new(camera.CFrame.Position, targetPosition), smoothSpeed)
+        end
+    end
+end)
+
+player.CharacterAdded:Connect(function()
+    createGUI()
+end)
